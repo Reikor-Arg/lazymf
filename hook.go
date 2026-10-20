@@ -28,7 +28,12 @@ type watcher struct {
 }
 
 func defaultWatcher() watcher {
-	return watcher{poll: pollStep, sleep: time.Sleep, dir: filepath.Join(os.TempDir(), "lazymf")}
+	// Per-user dir, not the shared temp dir: avoids symlink planting by other users.
+	base, err := os.UserCacheDir()
+	if err != nil {
+		base = os.TempDir()
+	}
+	return watcher{poll: pollStep, sleep: time.Sleep, dir: filepath.Join(base, "lazymf")}
 }
 
 type bgTask struct {

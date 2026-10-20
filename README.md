@@ -23,9 +23,9 @@ never kills anything and the reminder carries no list.
   The hook reads `background_tasks` from its stdin. No live subagent/shell/workflow: it exits
   silently. Otherwise it waits the interval (checking every 10 s) and exits with code 2, which wakes
   the AI even if the session is idle. Only the newest hook run per session speaks; older runs notice
-  a newer token in `<tmp>/lazymf/<session>` and exit silently.
+  a newer token in `<user cache dir>/lazymf/<session>` and exit silently.
 - **Codex CLI, GitHub Copilot CLI**: the stop hook gives no job list, so `lazymf` keeps a per-session
-  registry in the temp directory (`SubagentStart` adds, `SubagentStop` removes). With live entries it
+  registry in the user cache directory (`SubagentStart` adds, `SubagentStop` removes). With live entries it
   waits the interval and then blocks the end of the turn with the reminder. If the jobs finish while
   it waits, it stays silent.
 
@@ -51,7 +51,7 @@ Caveats, not verified against a live install:
 - Codex requires reviewing/trusting new hooks (`/hooks` in the CLI) before they run.
 - Copilot ends the turn anyway after 8 consecutive blocks.
 - A subagent that dies without firing its stop hook stays in the registry until the session's state is
-  cleaned from the temp directory.
+  cleaned from the user cache directory (`lazymf` subfolder).
 
 ## Install
 
