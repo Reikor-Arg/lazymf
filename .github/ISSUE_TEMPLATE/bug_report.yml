@@ -1,0 +1,43 @@
+name: Bug report
+description: Something lazymf did wrong (or didn't do)
+labels: [bug]
+body:
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Tool
+      options: [Claude Code (CLI), Claude Code (VS Code / JetBrains), Codex CLI, GitHub Copilot CLI, Other]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `lazymf version` and of your tool's version command
+      placeholder: lazymf v0.1.2, Claude Code 2.1.280
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Windows, Linux, macOS, WSL]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what you expected
+      description: e.g. "reminder fired with no jobs running", "no reminder while a subagent was stuck"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: config
+    attributes:
+      label: Hook config
+      description: The lazymf entry from ~/.claude/settings.json, ~/.codex/hooks.json or ~/.copilot/hooks/lazymf.json. Remove any secrets.
+      render: json
