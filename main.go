@@ -15,8 +15,9 @@ var version = "dev"
 const usage = `lazymf - reminds your AI that it has background jobs running
 
 Usage:
-  lazymf hook <tool> [--interval N] [--max-age MIN] [--stuck MIN] [--message S] [--event E]   (reads the hook JSON on stdin)
-  lazymf install   [--tool X] [--interval N] [--max-age MIN] [--stuck MIN] [--home DIR]
+  lazymf hook <tool> [--interval N] [--max-age MIN] [--stuck MIN] [--mode auto|rewake|block] [--message S] [--event E]   (reads the hook JSON on stdin)
+  lazymf install   [--tool X] [--interval N] [--max-age MIN] [--stuck MIN] [--mode auto|rewake|block] [--home DIR]
+  lazymf doctor    [--home DIR]
   lazymf uninstall [--tool X] [--home DIR]
   lazymf version
 
@@ -39,6 +40,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher) in
 		return runInstall(args[1:], stdout, stderr, true)
 	case "uninstall":
 		return runInstall(args[1:], stdout, stderr, false)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "lazymf", version)
 		return 0

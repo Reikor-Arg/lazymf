@@ -136,7 +136,7 @@ func TestInstallUninstallIdempotent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--home", home, "--interval", "30"}
+	args := []string{"--home", home, "--interval", "30", "--mode", "rewake"}
 	var out, errb bytes.Buffer
 	if code := runInstall(args, &out, &errb, true); code != 0 {
 		t.Fatalf("install: %d %s", code, errb.String())
@@ -324,10 +324,58 @@ func TestReminderNoTranscriptPathNoList(t *testing.T) {
 }
 
 func TestStuckFlagInstall(t *testing.T) {
-	if c := hookCommand("lazymf", "claude", 60, 60, 5, ""); strings.Contains(c, "--stuck") {
+	if c := hookCommand("lazymf", "claude", 60, 60, 5, "", ""); strings.Contains(c, "--stuck") {
 		t.Fatal(c)
 	}
-	if c := hookCommand("lazymf", "claude", 60, 60, 9, ""); !strings.HasSuffix(c, "--stuck 9") {
+	if c := hookCommand("lazymf", "claude", 60, 60, 9, "", ""); !strings.HasSuffix(c, "--stuck 9") {
 		t.Fatal(c)
+	}
+}
+
+func metaInput(t *testing.T, metaA string, tasks ...map[string]string) string {
+	t.Helper()
+	proj := filepath.Join(t.TempDir(), "proj")
+	if metaA != "" {
+		p := filepath.Join(proj, "s1", "subagents", "agent-a.meta.json")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(metaA), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in, _ := json.Marshal(map[string]any{"session_id": "s1", "transcript_path": filepath.Join(proj, "s1.jsonl"), "background_tasks": tasks})
+	return string(in)
+}
+
+func TestFinishedSubagentAloneIsSilent(t *testing.T) {
+	in := metaInput(t, `{"agentType":"general-purpose","finished":true}`,
+		map[string]string{"id": "a", "type": "subagent", "status": "running"})
+	var out, errb bytes.Buffer
+	if code := run([]string{"hook", "claude", "--interval", "3"}, strings.NewReader(in), &out, &errb, testWatcher(t, nil)); code != 0 || errb.Len() != 0 || out.Len() != 0 {
+		t.Fatalf("code=%d err=%q out=%q", code, errb.String(), out.String())
+	}
+	var out2, errb2 bytes.Buffer
+	if code := run([]string{"hook", "claude", "--mode", "block", "--interval", "3"}, strings.NewReader(in), &out2, &errb2, testWatcher(t, nil)); code != 0 || errb2.Len() != 0 || out2.Len() != 0 {
+		t.Fatalf("block: code=%d err=%q out=%q", code, errb2.String(), out2.String())
+	}
+}
+
+func TestFinishedSubagentPlusShellListsOnlyShell(t *testing.T) {
+	in := metaInput(t, `{"finished":true}`,
+		map[string]string{"id": "a", "type": "subagent", "status": "running", "description": "gone"},
+		map[string]string{"id": "sh1", "type": "shell", "status": "running", "description": "alive"})
+	got := remind(t, testWatcher(t, nil), in)
+	if strings.Contains(got, "gone") || !strings.Contains(got, `shell "alive"`) {
+		t.Fatalf("got: %s", got)
+	}
+}
+
+func TestInvalidMetaCountsAsLive(t *testing.T) {
+	for _, meta := range []string{`{not json`, `{"finished":false}`, ""} {
+		in := metaInput(t, meta, map[string]string{"id": "a", "type": "subagent", "status": "running", "description": "still"})
+		if got := remind(t, testWatcher(t, nil), in); !strings.Contains(got, `subagent "still"`) {
+			t.Fatalf("meta=%q got: %s", meta, got)
+		}
 	}
 }

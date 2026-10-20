@@ -119,6 +119,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 	maxAge := fs.Int("max-age", defaultMaxAge, "minutes after which a registry entry is dropped")
 	stuck := fs.Int("stuck", defaultStuck, "minutes without output after which a job is flagged as likely stuck")
 	event := fs.String("event", "", "hook event name (overrides the one in the JSON)")
+	mode := fs.String("mode", "auto", "claude only: auto/rewake (async, exit 2) or block (sync, decision block)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 1
 	}
@@ -128,6 +129,10 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 	}
 	if tool != "claude" && tool != "codex" && tool != "copilot" {
 		fmt.Fprintf(stderr, "lazymf hook: unsupported tool %q\n", tool)
+		return 1
+	}
+	if *mode != "auto" && *mode != "rewake" && *mode != "block" {
+		fmt.Fprintln(stderr, "lazymf hook: --mode must be auto, rewake or block")
 		return 1
 	}
 	if *stuck < 1 {
@@ -221,7 +226,8 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 			return 0 // jobs finished while waiting: stay silent
 		}
 	}
-	if tool == "claude" {
+	claudeBlock := tool == "claude" && *mode == "block"
+	if tool == "claude" && !claudeBlock {
 		// Grace margin: new activity means a newer Stop will decide with fresh data.
 		w.sleep(w.grace)
 		if cur, err := os.ReadFile(tokPath); err != nil || string(cur) != token {
@@ -233,10 +239,21 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 	}
 
 	if tool == "claude" {
-		fmt.Fprintln(stderr, *message+jobList(in, w.now(), time.Duration(*stuck)*time.Minute))
-		return 2
+		// Fresh data: drop subagents that finished while we waited.
+		in.BackgroundTasks = dropFinishedSubagents(in)
+		if liveClaudeJobs(in.BackgroundTasks) == 0 {
+			return 0
+		}
 	}
-	out, err := json.Marshal(map[string]string{"decision": "block", "reason": *message})
+	reason := *message
+	if tool == "claude" {
+		reason += jobList(in, w.now(), time.Duration(*stuck)*time.Minute)
+		if !claudeBlock {
+			fmt.Fprintln(stderr, reason)
+			return 2
+		}
+	}
+	out, err := json.Marshal(map[string]string{"decision": "block", "reason": reason})
 	if err != nil {
 		return 1
 	}
@@ -271,6 +288,35 @@ func lastActivity(in hookInput, t bgTask) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// subagentFinished reports whether the subagent's meta.json says finished:true.
+// Any missing/unreadable/invalid data means "not finished" (fail towards reminding).
+func subagentFinished(in hookInput, t bgTask) bool {
+	sid := firstNonEmpty(in.SessionID, in.SessionIDCamel)
+	if in.TranscriptPath == "" || !jobIDRe.MatchString(t.ID) || !jobIDRe.MatchString(sid) || safeID(sid) != sid {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(in.TranscriptPath), sid, "subagents", "agent-"+t.ID+".meta.json"))
+	if err != nil {
+		return false
+	}
+	var m struct {
+		Finished bool `json:"finished"`
+	}
+	return json.Unmarshal(b, &m) == nil && m.Finished
+}
+
+// dropFinishedSubagents returns the tasks without subagents already finished.
+func dropFinishedSubagents(in hookInput) []bgTask {
+	out := make([]bgTask, 0, len(in.BackgroundTasks))
+	for _, t := range in.BackgroundTasks {
+		if strings.ToLower(strings.TrimSpace(t.Type)) == "subagent" && subagentFinished(in, t) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // oneLine strips control characters and cuts the text to n runes.

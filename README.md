@@ -36,7 +36,9 @@ wrote output, measured by `lazymf` itself (no tokens spent):
   (`<session dir>/<session>/subagents/agent-<id>.jsonl`) or of the background shell output file
   (`<temp>/claude/<project>/<session>/tasks/<id>.output`), computed at the moment of speaking. A job
   idle for `--stuck` minutes or more (default 5) is marked `likely stuck`; workflows and jobs
-  without a file show `last activity unknown`. Job ids are accepted only if they match
+  without a file show `last activity unknown`. Right before speaking it also drops subagents whose
+  `<session dir>/<session>/subagents/agent-<id>.meta.json` says `"finished": true`; if none is left
+  it exits silently (a missing or invalid meta.json counts as live). Job ids are accepted only if they match
   `^[A-Za-z0-9_-]{1,64}$`; if anything fails, the reminder goes out without the list.
 - **Codex CLI, GitHub Copilot CLI**: the stop hook gives no job list, so `lazymf` keeps a per-session
   registry in the user cache directory (`SubagentStart` adds, `SubagentStop` removes). Each entry
@@ -81,7 +83,9 @@ lazymf install                       # every detected tool, 60 s interval
 lazymf install --tool claude --interval 120
 lazymf install --tool claude --stuck 10     # flag jobs idle for 10+ min as likely stuck (default 5)
 lazymf install --tool codex --max-age 180   # registry entries (Codex, Copilot) expire after 180 min
+lazymf install --mode block         # force the blocking Stop hook for Claude Code (auto by default)
 lazymf install --home /some/home     # configure another home directory
+lazymf doctor                        # inspect CLIs, extensions, strategy and hooks (read-only)
 ```
 
 `install` detects `~/.claude`, `~/.codex` and `~/.copilot`, adds its hooks using the absolute path of
@@ -97,6 +101,35 @@ without output after which a job in the reminder list is marked `likely stuck`. 
 into the hook command only when it is not the default.
 
 The reminder text can be changed by adding `--message "..."` to the hook command.
+
+## Doctor and automatic strategy
+
+`lazymf doctor` is read-only. It reports:
+
+- which of `claude`, `codex` and `copilot` are in the `PATH`, with their version (`--version`, 5 s limit each);
+- the Claude Code and Codex (`openai.chatgpt`) extensions found on disk in `~/.vscode`, `~/.vscode-insiders`, `~/.cursor` and `~/.windsurf` (highest version of each, no process is started), plus any JetBrains plugin with "claude" in its name;
+- whether the installed Claude Code extension has the agents view (the string `agentMapAgents` in `webview/index.js`; present in 2.1.301 and 2.1.304, the only versions checked);
+- the strategy chosen per tool, whether the lazymf hook is installed (and with which flags), and concrete recommendations (update, run `lazymf install`, approve the hooks in Codex with `/hooks`).
+
+`lazymf install` picks the Claude Code mode by itself (`--mode auto`, the default):
+
+| Mode | When | Hook |
+|---|---|---|
+| `rewake` | `claude --version` >= 2.1.280 | `Stop` with `asyncRewake`, exits 2 (current behavior) |
+| `block` | older, or the version cannot be read | synchronous `Stop`, no `asyncRewake`: sleeps the interval checking the token, then prints `{"decision":"block","reason":"<message + job list>"}`, only if `background_tasks` has live jobs |
+
+`--mode rewake` or `--mode block` forces one (also accepted by `hook claude`). In block mode `install`
+sets `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` to `1000` in the `env` of `~/.claude/settings.json` (Claude Code
+otherwise ends the turn after 8 consecutive blocks). If the variable already exists it is left alone.
+A marker file in the cache directory records that lazymf set it; `uninstall`, or re-running `install`
+in rewake mode, removes it only in that case. Codex and Copilot always use the registry + block mode.
+At the end, `install` prints the strategy per tool and the doctor's recommendations.
+
+Minimum Claude Code version: **2.1.280**, the version tested in real. The
+[official changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) documents
+`background_tasks` in the Stop hook input since 2.1.145 and the stop-hook block cap
+(`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`) since 2.1.143, but never says when `asyncRewake` was introduced
+(its first mention is a fix in 2.1.287), so 2.1.280 is used as the lowest known-good version.
 
 ## Uninstall
 
