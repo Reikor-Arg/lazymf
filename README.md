@@ -14,7 +14,13 @@ tool and, every N seconds (60 by default), sends one fixed reminder:
 > lazymf: background jobs (subagents, shell tasks or workflows) are still running. Do not just confirm they are needed - verify each one is actually progressing: check the last-modified time of its output file or transcript and read only its last few lines. A job with no new output for several minutes, or waiting for something that will never arrive (a notification, a background test run), is stuck: stop it and finish or relaunch the work yourself. Then report each job as progressing or stuck/stopped.
 
 The AI decides what to do: look at the jobs, wait, or stop the ones that are stuck. `lazymf`
-never kills anything and the reminder carries no list.
+never kills anything. On Claude Code the reminder also lists each live job with how long ago it last
+wrote output, measured by `lazymf` itself (no tokens spent):
+
+```
+- subagent "tests compras" (a7ff577f): last output 14 min ago - likely stuck
+- shell "sleep 75" (bkjgc247): last output 0 min ago
+```
 
 ## How it works
 
@@ -25,7 +31,13 @@ never kills anything and the reminder carries no list.
   the AI even if the session is idle. Only the newest hook run per session speaks; older runs notice
   a newer token in `<user cache dir>/lazymf/<session>` and exit silently. Just before speaking it
   waits a short grace margin (5 s) and exits silently only if the token was replaced: that means
-  a newer `Stop` will decide with fresh data.
+  a newer `Stop` will decide with fresh data. When it speaks it appends one line per live job
+  (max 20, then `... and N more`): the mtime of the subagent transcript
+  (`<session dir>/<session>/subagents/agent-<id>.jsonl`) or of the background shell output file
+  (`<temp>/claude/<project>/<session>/tasks/<id>.output`), computed at the moment of speaking. A job
+  idle for `--stuck` minutes or more (default 5) is marked `likely stuck`; workflows and jobs
+  without a file show `last activity unknown`. Job ids are accepted only if they match
+  `^[A-Za-z0-9_-]{1,64}$`; if anything fails, the reminder goes out without the list.
 - **Codex CLI, GitHub Copilot CLI**: the stop hook gives no job list, so `lazymf` keeps a per-session
   registry in the user cache directory (`SubagentStart` adds, `SubagentStop` removes). Each entry
   stores its start time; entries older than `--max-age` minutes (default 60) are dropped and the
@@ -67,6 +79,7 @@ executable and run:
 ```
 lazymf install                       # every detected tool, 60 s interval
 lazymf install --tool claude --interval 120
+lazymf install --tool claude --stuck 10     # flag jobs idle for 10+ min as likely stuck (default 5)
 lazymf install --tool codex --max-age 180   # registry entries (Codex, Copilot) expire after 180 min
 lazymf install --home /some/home     # configure another home directory
 ```
@@ -78,6 +91,10 @@ Copilot gets its own file, `~/.copilot/hooks/lazymf.json`. Do not move the binar
 `install` again if you do.
 
 `--max-age MIN` (default 60) is accepted by `hook` and `install` and only affects Codex and Copilot.
+
+`--stuck MIN` (default 5) is accepted by `hook` and `install` and only affects Claude Code: the minutes
+without output after which a job in the reminder list is marked `likely stuck`. `install` writes it
+into the hook command only when it is not the default.
 
 The reminder text can be changed by adding `--message "..."` to the hook command.
 

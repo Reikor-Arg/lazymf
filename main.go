@@ -15,8 +15,8 @@ var version = "dev"
 const usage = `lazymf - reminds your AI that it has background jobs running
 
 Usage:
-  lazymf hook <tool> [--interval N] [--max-age MIN] [--message S] [--event E]   (reads the hook JSON on stdin)
-  lazymf install   [--tool X] [--interval N] [--max-age MIN] [--home DIR]
+  lazymf hook <tool> [--interval N] [--max-age MIN] [--stuck MIN] [--message S] [--event E]   (reads the hook JSON on stdin)
+  lazymf install   [--tool X] [--interval N] [--max-age MIN] [--stuck MIN] [--home DIR]
   lazymf uninstall [--tool X] [--home DIR]
   lazymf version
 

@@ -22,12 +22,13 @@ func runInstall(args []string, stdout, stderr io.Writer, install bool) int {
 	tool := fs.String("tool", "all", "claude, codex, copilot or all")
 	interval := fs.Int("interval", defaultInterval, "seconds between reminders")
 	maxAge := fs.Int("max-age", defaultMaxAge, "minutes after which a registry entry (Codex, Copilot) is dropped")
+	stuck := fs.Int("stuck", defaultStuck, "minutes without output after which a job is flagged as likely stuck (Claude Code)")
 	home := fs.String("home", "", "home directory to configure (default: the user's home)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *interval < 1 || *maxAge < 1 {
-		fmt.Fprintln(stderr, "lazymf: --interval and --max-age must be >= 1")
+	if *interval < 1 || *maxAge < 1 || *stuck < 1 {
+		fmt.Fprintln(stderr, "lazymf: --interval, --max-age and --stuck must be >= 1")
 		return 2
 	}
 	if *home == "" {
@@ -69,7 +70,7 @@ func runInstall(args []string, stdout, stderr io.Writer, install bool) int {
 		var changed bool
 		var err error
 		if install {
-			changed, err = installTool(*home, t, bin, *interval, *maxAge)
+			changed, err = installTool(*home, t, bin, *interval, *maxAge, *stuck)
 		} else {
 			changed, err = uninstallTool(*home, t)
 		}
@@ -102,10 +103,13 @@ func contains(l []string, s string) bool {
 	return false
 }
 
-func hookCommand(bin, tool string, interval, maxAge int, event string) string {
+func hookCommand(bin, tool string, interval, maxAge, stuck int, event string) string {
 	c := fmt.Sprintf(`"%s" hook %s --interval %d`, bin, tool, interval)
 	if tool != "claude" && maxAge != defaultMaxAge {
 		c += fmt.Sprintf(" --max-age %d", maxAge)
+	}
+	if tool == "claude" && stuck != defaultStuck {
+		c += fmt.Sprintf(" --stuck %d", stuck)
 	}
 	if event != "" {
 		c += " --event " + event
@@ -118,18 +122,18 @@ func isOurs(cmd, tool string) bool {
 	return strings.Contains(strings.ToLower(cmd), "lazymf") && strings.Contains(cmd, " hook "+tool)
 }
 
-func installTool(home, tool, bin string, interval, maxAge int) (bool, error) {
+func installTool(home, tool, bin string, interval, maxAge, stuck int) (bool, error) {
 	switch tool {
 	case "claude":
 		entries := map[string]map[string]any{
 			"Stop": {
-				"type": "command", "command": hookCommand(bin, tool, interval, maxAge, ""),
+				"type": "command", "command": hookCommand(bin, tool, interval, maxAge, stuck, ""),
 				"asyncRewake": true, "timeout": interval + 60,
 			},
 		}
 		return editHooksJSON(filepath.Join(home, ".claude", "settings.json"), tool, entries, true)
 	case "codex":
-		cmd := hookCommand(bin, tool, interval, maxAge, "")
+		cmd := hookCommand(bin, tool, interval, maxAge, stuck, "")
 		entries := map[string]map[string]any{
 			"Stop":          {"type": "command", "command": cmd, "timeout": interval + 60},
 			"SubagentStart": {"type": "command", "command": cmd, "timeout": 10},
@@ -137,7 +141,7 @@ func installTool(home, tool, bin string, interval, maxAge int) (bool, error) {
 		}
 		return editHooksJSON(filepath.Join(home, ".codex", "hooks.json"), tool, entries, true)
 	case "copilot":
-		return installCopilot(home, bin, interval, maxAge)
+		return installCopilot(home, bin, interval, maxAge, stuck)
 	}
 	return false, fmt.Errorf("unsupported tool %q", tool)
 }
@@ -266,9 +270,9 @@ func copilotFile(home string) string {
 }
 
 // installCopilot owns a separate file: Copilot loads every *.json in ~/.copilot/hooks.
-func installCopilot(home, bin string, interval, maxAge int) (bool, error) {
+func installCopilot(home, bin string, interval, maxAge, stuck int) (bool, error) {
 	mk := func(event string, timeout int) []any {
-		c := hookCommand(bin, "copilot", interval, maxAge, event)
+		c := hookCommand(bin, "copilot", interval, maxAge, stuck, event)
 		return []any{map[string]any{
 			"type": "command", "bash": c, "powershell": "& " + c, "timeoutSec": timeout,
 		}}
