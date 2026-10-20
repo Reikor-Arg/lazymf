@@ -17,7 +17,7 @@ Anything launched in the background that has not finished yet: a subagent, a bac
 _Avoid_: task, worker, process, watched agent
 
 **Reminder**:
-A fixed message to the main AI, one per interval: "you have active background jobs, check them; stop the ones that are not useful". Each one costs a turn. It carries no list and no data: the main AI finds out on its own which jobs they are.
+A fixed message to the main AI, one per interval, telling it to verify that each background job is actually progressing (last output time, last lines) and to stop and redo the stuck ones, not just confirm they are needed. Each one costs a turn. It carries no list and no data: the main AI finds out on its own which jobs they are.
 _Avoid_: alert, notice, heartbeat
 
 **Stuck job**:

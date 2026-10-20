@@ -11,7 +11,7 @@ When the main AI session launches subagents, background shell commands or workfl
 quiet, nothing tells it they are still running. `lazymf` hooks into the end-of-turn hook of the
 tool and, every N seconds (60 by default), sends one fixed reminder:
 
-> Reminder: you have active background jobs (subagents, shell tasks or workflows). Check what they are doing; stop any that are not useful.
+> lazymf: background jobs (subagents, shell tasks or workflows) are still running. Do not just confirm they are needed - verify each one is actually progressing: check the last-modified time of its output file or transcript and read only its last few lines. A job with no new output for several minutes, or waiting for something that will never arrive (a notification, a background test run), is stuck: stop it and finish or relaunch the work yourself. Then report each job as progressing or stuck/stopped.
 
 The AI decides what to do: look at the jobs, wait, or stop the ones that are stuck. `lazymf`
 never kills anything and the reminder carries no list.
