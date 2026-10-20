@@ -53,7 +53,6 @@ type hookInput struct {
 	AgentID         string   `json:"agent_id"`
 	AgentIDCamel    string   `json:"agentId"`
 	BackgroundTasks []bgTask `json:"background_tasks"`
-	TranscriptPath  string   `json:"transcript_path"`
 }
 
 var terminalStatuses = map[string]bool{
@@ -194,13 +193,6 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
 		return 1
 	}
-	var startMod time.Time
-	haveMod := false
-	if tool == "claude" && in.TranscriptPath != "" {
-		if st, err := os.Stat(in.TranscriptPath); err == nil {
-			startMod, haveMod = st.ModTime(), true
-		}
-	}
 	total := time.Duration(*interval) * time.Second
 	for waited := time.Duration(0); waited < total; {
 		step := w.poll
@@ -223,12 +215,6 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		w.sleep(w.grace)
 		if cur, err := os.ReadFile(tokPath); err != nil || string(cur) != token {
 			return 0
-		}
-		if haveMod {
-			if st, err := os.Stat(in.TranscriptPath); err == nil && st.ModTime().After(startMod) {
-				_ = os.Remove(tokPath)
-				return 0
-			}
 		}
 	}
 	if cur, err := os.ReadFile(tokPath); err == nil && string(cur) == token {

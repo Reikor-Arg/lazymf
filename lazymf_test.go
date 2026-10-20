@@ -196,33 +196,6 @@ func TestCopilotInstallUninstall(t *testing.T) {
 	}
 }
 
-func TestClaudeSilentWhenTranscriptChangesDuringGrace(t *testing.T) {
-	w := testWatcher(t, nil)
-	tr := filepath.Join(t.TempDir(), "t.jsonl")
-	if err := os.WriteFile(tr, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-time.Hour)
-	_ = os.Chtimes(tr, old, old)
-	w.sleep = func(d time.Duration) {
-		if d == w.grace { // activity arrives during the grace margin
-			_ = os.Chtimes(tr, time.Now(), time.Now())
-		}
-	}
-	q, _ := json.Marshal(tr)
-	in := `{"session_id":"s1","transcript_path":` + string(q) + `,"background_tasks":[{"id":"a","type":"subagent","status":"running"}]}`
-	var out, errb bytes.Buffer
-	if code := run([]string{"hook", "claude", "--interval", "3"}, strings.NewReader(in), &out, &errb, w); code != 0 || errb.Len() != 0 {
-		t.Fatalf("must be silent: code=%d err=%q", code, errb.String())
-	}
-	// Unchanged transcript: still speaks.
-	_ = os.Chtimes(tr, old, old)
-	w.sleep = func(time.Duration) {}
-	if code := run([]string{"hook", "claude", "--interval", "3"}, strings.NewReader(in), &out, &errb, w); code != 2 {
-		t.Fatalf("expected exit 2, got %d", code)
-	}
-}
-
 func TestClaudeSilentWhenSupersededDuringGrace(t *testing.T) {
 	w := testWatcher(t, nil)
 	w.sleep = func(d time.Duration) {

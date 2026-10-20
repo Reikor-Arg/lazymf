@@ -24,10 +24,8 @@ never kills anything and the reminder carries no list.
   silently. Otherwise it waits the interval (checking every 10 s) and exits with code 2, which wakes
   the AI even if the session is idle. Only the newest hook run per session speaks; older runs notice
   a newer token in `<user cache dir>/lazymf/<session>` and exit silently. Just before speaking it
-  waits a short grace margin (5 s) and exits silently if the token was replaced or if the
-  transcript (`transcript_path` from the hook input) was modified after the hook started: that means
-  there was new activity and a newer `Stop` will decide with fresh data. Without a readable
-  transcript path this check is skipped.
+  waits a short grace margin (5 s) and exits silently only if the token was replaced: that means
+  a newer `Stop` will decide with fresh data.
 - **Codex CLI, GitHub Copilot CLI**: the stop hook gives no job list, so `lazymf` keeps a per-session
   registry in the user cache directory (`SubagentStart` adds, `SubagentStop` removes). Each entry
   stores its start time; entries older than `--max-age` minutes (default 60) are dropped and the
