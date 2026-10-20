@@ -14,7 +14,7 @@ import (
 func testWatcher(t *testing.T, onSleep func(n int)) watcher {
 	t.Helper()
 	n := 0
-	return watcher{poll: time.Second, dir: filepath.Join(t.TempDir(), "state"), sleep: func(time.Duration) {
+	return watcher{poll: time.Second, grace: 5 * time.Second, now: time.Now, dir: filepath.Join(t.TempDir(), "state"), sleep: func(time.Duration) {
 		n++
 		if onSleep != nil {
 			onSleep(n)
@@ -114,7 +114,7 @@ func TestRegistryConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = registryAdd(p, string(rune('a'+i)))
+			_ = registryAdd(p, string(rune('a'+i)), time.Now())
 		}(i)
 	}
 	wg.Wait()
@@ -193,5 +193,75 @@ func TestCopilotInstallUninstall(t *testing.T) {
 	}
 	if _, err := os.Stat(copilotFile(home)); err == nil {
 		t.Fatal("file not removed")
+	}
+}
+
+func TestClaudeSilentWhenTranscriptChangesDuringGrace(t *testing.T) {
+	w := testWatcher(t, nil)
+	tr := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(tr, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(tr, old, old)
+	w.sleep = func(d time.Duration) {
+		if d == w.grace { // activity arrives during the grace margin
+			_ = os.Chtimes(tr, time.Now(), time.Now())
+		}
+	}
+	q, _ := json.Marshal(tr)
+	in := `{"session_id":"s1","transcript_path":` + string(q) + `,"background_tasks":[{"id":"a","type":"subagent","status":"running"}]}`
+	var out, errb bytes.Buffer
+	if code := run([]string{"hook", "claude", "--interval", "3"}, strings.NewReader(in), &out, &errb, w); code != 0 || errb.Len() != 0 {
+		t.Fatalf("must be silent: code=%d err=%q", code, errb.String())
+	}
+	// Unchanged transcript: still speaks.
+	_ = os.Chtimes(tr, old, old)
+	w.sleep = func(time.Duration) {}
+	if code := run([]string{"hook", "claude", "--interval", "3"}, strings.NewReader(in), &out, &errb, w); code != 2 {
+		t.Fatalf("expected exit 2, got %d", code)
+	}
+}
+
+func TestClaudeSilentWhenSupersededDuringGrace(t *testing.T) {
+	w := testWatcher(t, nil)
+	w.sleep = func(d time.Duration) {
+		if d == w.grace {
+			_ = os.WriteFile(filepath.Join(w.dir, "claude-s1.token"), []byte("newer"), 0o600)
+		}
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"hook", "claude", "--interval", "3"}, strings.NewReader(liveJSON), &out, &errb, w); code != 0 || errb.Len() != 0 {
+		t.Fatalf("must be silent: code=%d err=%q", code, errb.String())
+	}
+}
+
+func TestRegistryEntriesExpire(t *testing.T) {
+	w := testWatcher(t, nil)
+	base := time.Now()
+	w.now = func() time.Time { return base }
+	var out, errb bytes.Buffer
+	for i := 0; i < 2; i++ { // Copilot: no id, one stamp per add
+		run([]string{"hook", "copilot", "--event", "subagentStart"}, strings.NewReader(`{"sessionId":"k"}`), &out, &errb, w)
+	}
+	reg := registryPath(w.dir, "copilot", "k")
+	if n := registryCount(reg); n != 2 {
+		t.Fatalf("count=%d", n)
+	}
+	w.now = func() time.Time { return base.Add(61 * time.Minute) }
+	if code := run([]string{"hook", "copilot", "--event", "agentStop"}, strings.NewReader(`{"sessionId":"k"}`), &out, &errb, w); code != 0 || out.Len() != 0 {
+		t.Fatalf("expired entries must be silent: %d %q", code, out.String())
+	}
+	if n := registryCount(reg); n != 0 {
+		t.Fatalf("registry not rewritten: %d", n)
+	}
+	w.now = func() time.Time { return base }
+	run([]string{"hook", "codex", "--event", "subagentStart"}, strings.NewReader(`{"session_id":"c","agent_id":"a"}`), &out, &errb, w)
+	cp := registryPath(w.dir, "codex", "c")
+	if n := registryLive(cp, base.Add(90*time.Minute), 2*time.Hour); n != 1 {
+		t.Fatalf("n=%d", n)
+	}
+	if n := registryLive(cp, base.Add(90*time.Minute), time.Hour); n != 0 {
+		t.Fatalf("n=%d", n)
 	}
 }

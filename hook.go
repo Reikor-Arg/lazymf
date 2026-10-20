@@ -17,6 +17,8 @@ import (
 const (
 	defaultInterval = 60
 	pollStep        = 10 * time.Second
+	graceStep       = 5 * time.Second
+	defaultMaxAge   = 60 // minutes before a registry entry is considered dead
 	defaultMessage  = "Reminder: you have active background jobs (subagents, shell tasks or workflows). Check what they are doing; stop any that are not useful."
 )
 
@@ -25,6 +27,8 @@ type watcher struct {
 	poll  time.Duration
 	sleep func(time.Duration)
 	dir   string // state directory
+	grace time.Duration
+	now   func() time.Time
 }
 
 func defaultWatcher() watcher {
@@ -33,7 +37,7 @@ func defaultWatcher() watcher {
 	if err != nil {
 		base = os.TempDir()
 	}
-	return watcher{poll: pollStep, sleep: time.Sleep, dir: filepath.Join(base, "lazymf")}
+	return watcher{poll: pollStep, sleep: time.Sleep, grace: graceStep, now: time.Now, dir: filepath.Join(base, "lazymf")}
 }
 
 type bgTask struct {
@@ -49,6 +53,7 @@ type hookInput struct {
 	AgentID         string   `json:"agent_id"`
 	AgentIDCamel    string   `json:"agentId"`
 	BackgroundTasks []bgTask `json:"background_tasks"`
+	TranscriptPath  string   `json:"transcript_path"`
 }
 
 var terminalStatuses = map[string]bool{
@@ -106,6 +111,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 	fs.SetOutput(stderr)
 	interval := fs.Int("interval", defaultInterval, "seconds between reminders")
 	message := fs.String("message", defaultMessage, "reminder text")
+	maxAge := fs.Int("max-age", defaultMaxAge, "minutes after which a registry entry is dropped")
 	event := fs.String("event", "", "hook event name (overrides the one in the JSON)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 1
@@ -116,6 +122,10 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 	}
 	if tool != "claude" && tool != "codex" && tool != "copilot" {
 		fmt.Fprintf(stderr, "lazymf hook: unsupported tool %q\n", tool)
+		return 1
+	}
+	if *maxAge < 1 {
+		fmt.Fprintln(stderr, "lazymf hook: --max-age must be >= 1")
 		return 1
 	}
 	var in hookInput
@@ -145,7 +155,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 			}
 			id = t
 		}
-		if err := registryAdd(reg, id); err != nil {
+		if err := registryAdd(reg, id, w.now()); err != nil {
 			fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
 			return 1
 		}
@@ -167,7 +177,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		if tool == "claude" {
 			return liveClaudeJobs(in.BackgroundTasks)
 		}
-		return registryCount(reg)
+		return registryLive(reg, w.now(), time.Duration(*maxAge)*time.Minute)
 	}
 	if live() == 0 {
 		return 0
@@ -184,6 +194,13 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
 		return 1
 	}
+	var startMod time.Time
+	haveMod := false
+	if tool == "claude" && in.TranscriptPath != "" {
+		if st, err := os.Stat(in.TranscriptPath); err == nil {
+			startMod, haveMod = st.ModTime(), true
+		}
+	}
 	total := time.Duration(*interval) * time.Second
 	for waited := time.Duration(0); waited < total; {
 		step := w.poll
@@ -199,6 +216,19 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		if tool != "claude" && live() == 0 {
 			_ = os.Remove(tokPath)
 			return 0 // jobs finished while waiting: stay silent
+		}
+	}
+	if tool == "claude" {
+		// Grace margin: new activity means a newer Stop will decide with fresh data.
+		w.sleep(w.grace)
+		if cur, err := os.ReadFile(tokPath); err != nil || string(cur) != token {
+			return 0
+		}
+		if haveMod {
+			if st, err := os.Stat(in.TranscriptPath); err == nil && st.ModTime().After(startMod) {
+				_ = os.Remove(tokPath)
+				return 0
+			}
 		}
 	}
 	if cur, err := os.ReadFile(tokPath); err == nil && string(cur) == token {

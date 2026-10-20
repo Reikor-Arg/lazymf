@@ -4,11 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// The registry is a per-session file with one job id per line, kept for tools
+// The registry is a per-session file with one "id<TAB>unix-seconds" line per job, kept for tools
 // whose stop hook does not list the live jobs (Codex, Copilot).
 
 func registryPath(dir, tool, sid string) string {
@@ -55,16 +56,50 @@ func writeLines(path string, lines []string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
-func registryAdd(path, id string) error {
+func entryID(line string) string {
+	id, _, _ := strings.Cut(line, "\t")
+	return id
+}
+
+func registryAdd(path, id string, now time.Time) error {
+	id = strings.Join(strings.Fields(id), "_")
 	return withLock(path, func() error {
 		lines := readLines(path)
 		for _, l := range lines {
-			if l == id {
+			if entryID(l) == id {
 				return nil
 			}
 		}
-		return writeLines(path, append(lines, id))
+		return writeLines(path, append(lines, id+"\t"+strconv.FormatInt(now.Unix(), 10)))
 	})
+}
+
+// registryLive drops entries older than maxAge (rewriting the file) and returns
+// how many remain. Entries without a timestamp are stamped with now.
+func registryLive(path string, now time.Time, maxAge time.Duration) int {
+	n := 0
+	_ = withLock(path, func() error {
+		lines := readLines(path)
+		keep := make([]string, 0, len(lines))
+		dirty := false
+		for _, l := range lines {
+			id, ts, ok := strings.Cut(l, "\t")
+			sec, err := strconv.ParseInt(ts, 10, 64)
+			if !ok || err != nil {
+				l, dirty = id+"\t"+strconv.FormatInt(now.Unix(), 10), true
+			} else if now.Sub(time.Unix(sec, 0)) > maxAge {
+				dirty = true
+				continue
+			}
+			keep = append(keep, l)
+		}
+		n = len(keep)
+		if dirty {
+			return writeLines(path, keep)
+		}
+		return nil
+	})
+	return n
 }
 
 // registryRemove drops id; if anyOne is true and id is absent it drops one entry.
@@ -73,7 +108,7 @@ func registryRemove(path, id string, anyOne bool) error {
 		lines := readLines(path)
 		idx := -1
 		for i, l := range lines {
-			if id != "" && l == id {
+			if id != "" && entryID(l) == id {
 				idx = i
 				break
 			}

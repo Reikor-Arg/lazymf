@@ -23,9 +23,16 @@ never kills anything and the reminder carries no list.
   The hook reads `background_tasks` from its stdin. No live subagent/shell/workflow: it exits
   silently. Otherwise it waits the interval (checking every 10 s) and exits with code 2, which wakes
   the AI even if the session is idle. Only the newest hook run per session speaks; older runs notice
-  a newer token in `<user cache dir>/lazymf/<session>` and exit silently.
+  a newer token in `<user cache dir>/lazymf/<session>` and exit silently. Just before speaking it
+  waits a short grace margin (5 s) and exits silently if the token was replaced or if the
+  transcript (`transcript_path` from the hook input) was modified after the hook started: that means
+  there was new activity and a newer `Stop` will decide with fresh data. Without a readable
+  transcript path this check is skipped.
 - **Codex CLI, GitHub Copilot CLI**: the stop hook gives no job list, so `lazymf` keeps a per-session
-  registry in the user cache directory (`SubagentStart` adds, `SubagentStop` removes). With live entries it
+  registry in the user cache directory (`SubagentStart` adds, `SubagentStop` removes). Each entry
+  stores its start time; entries older than `--max-age` minutes (default 60) are dropped and the
+  registry is rewritten, so a subagent that dies without firing its stop hook cannot block forever.
+  With live entries it
   waits the interval and then blocks the end of the turn with the reminder. If the jobs finish while
   it waits, it stays silent.
 
@@ -50,8 +57,8 @@ Caveats, not verified against a live install:
   ends. If they run synchronously, the reminder never fires there (harmless).
 - Codex requires reviewing/trusting new hooks (`/hooks` in the CLI) before they run.
 - Copilot ends the turn anyway after 8 consecutive blocks.
-- A subagent that dies without firing its stop hook stays in the registry until the session's state is
-  cleaned from the user cache directory (`lazymf` subfolder).
+- A subagent that dies without firing its stop hook stays in the registry until `--max-age` expires it.
+  A legitimately longer-running subagent is also dropped after that time: raise `--max-age`.
 
 ## Install
 
@@ -62,6 +69,7 @@ executable and run:
 ```
 lazymf install                       # every detected tool, 60 s interval
 lazymf install --tool claude --interval 120
+lazymf install --tool codex --max-age 180   # registry entries (Codex, Copilot) expire after 180 min
 lazymf install --home /some/home     # configure another home directory
 ```
 
@@ -70,6 +78,8 @@ the binary, keeps your other hooks, does not duplicate itself on re-runs (re-run
 `--interval` updates it) and saves the first original of each file it edits as `<file>.bak-lazymf`.
 Copilot gets its own file, `~/.copilot/hooks/lazymf.json`. Do not move the binary afterwards; run
 `install` again if you do.
+
+`--max-age MIN` (default 60) is accepted by `hook` and `install` and only affects Codex and Copilot.
 
 The reminder text can be changed by adding `--message "..."` to the hook command.
 
