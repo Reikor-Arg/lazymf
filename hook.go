@@ -70,16 +70,68 @@ var terminalStatuses = map[string]bool{
 
 var watchedTypes = map[string]bool{"subagent": true, "shell": true, "workflow": true}
 
-// liveClaudeJobs counts watched jobs (subagent, shell, workflow) that are not in a terminal state.
-func liveClaudeJobs(tasks []bgTask) int {
-	n := 0
+// liveClaudeIDs returns the ids of watched jobs (subagent, shell, workflow) that are not in a
+// terminal state. A job without id is identified by its type and description.
+func liveClaudeIDs(tasks []bgTask) []string {
+	var ids []string
 	for _, t := range tasks {
 		if watchedTypes[strings.ToLower(strings.TrimSpace(t.Type))] &&
 			!terminalStatuses[strings.ToLower(strings.TrimSpace(t.Status))] {
-			n++
+			id := t.ID
+			if id == "" {
+				id = t.Type + ":" + t.Description
+			}
+			ids = append(ids, id)
 		}
 	}
-	return n
+	return ids
+}
+
+// liveClaudeJobs counts watched jobs (subagent, shell, workflow) that are not in a terminal state.
+func liveClaudeJobs(tasks []bgTask) int { return len(liveClaudeIDs(tasks)) }
+
+// reminderState is the escalation state kept per tool and session: the ids of the live jobs at the
+// last delivered Reminder and the step (wait = interval x step) the next one will use.
+type reminderState struct {
+	IDs  []string `json:"ids"`
+	Step int      `json:"step"`
+}
+
+func statePath(dir, tool, sid string) string { return filepath.Join(dir, tool+"-"+sid+".state") }
+
+// readState returns the saved state; missing or unreadable means no state.
+func readState(path string) reminderState {
+	var st reminderState
+	b, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(b, &st) != nil {
+		return reminderState{}
+	}
+	return st
+}
+
+func writeState(path string, st reminderState) error {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
+// nextStep is 1 when any live id is not in the saved state, otherwise the saved step.
+func nextStep(st reminderState, live []string) int {
+	known := make(map[string]bool, len(st.IDs))
+	for _, id := range st.IDs {
+		known[id] = true
+	}
+	for _, id := range live {
+		if !known[id] {
+			return 1
+		}
+	}
+	if st.Step < 1 {
+		return 1
+	}
+	return st.Step
 }
 
 // safeID makes a session id safe to use as a file name (no path traversal).
@@ -188,15 +240,18 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		return 0
 	}
 
-	live := func() int {
+	live := func() []string {
 		if tool == "claude" {
-			return liveClaudeJobs(in.BackgroundTasks)
+			return liveClaudeIDs(in.BackgroundTasks)
 		}
-		return registryLive(reg, w.now(), time.Duration(*maxAge)*time.Minute)
+		return registryLiveIDs(reg, w.now(), time.Duration(*maxAge)*time.Minute)
 	}
-	if live() == 0 {
+	ids := live()
+	if len(ids) == 0 {
 		return 0
 	}
+	statePth := statePath(w.dir, tool, sid)
+	step := nextStep(readState(statePth), ids)
 
 	// Deduplication: the newest hook run owns the token; older runs exit silently.
 	token, err := newToken()
@@ -209,7 +264,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
 		return 1
 	}
-	total := time.Duration(*interval) * time.Second
+	total := time.Duration(*interval) * time.Second * time.Duration(step)
 	for waited := time.Duration(0); waited < total; {
 		step := w.poll
 		if total-waited < step {
@@ -221,8 +276,9 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		if err != nil || string(cur) != token {
 			return 0 // superseded by a newer run
 		}
-		if tool != "claude" && live() == 0 {
+		if tool != "claude" && len(live()) == 0 {
 			_ = os.Remove(tokPath)
+			_ = os.Remove(statePth)
 			return 0 // jobs finished while waiting: stay silent
 		}
 	}
@@ -241,9 +297,14 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 	if tool == "claude" {
 		// Fresh data: drop subagents that finished while we waited.
 		in.BackgroundTasks = dropFinishedSubagents(in)
-		if liveClaudeJobs(in.BackgroundTasks) == 0 {
-			return 0
-		}
+	}
+	spoken := live()
+	if len(spoken) == 0 {
+		_ = os.Remove(statePth) // nothing alive at speaking time: next batch starts at step 1
+		return 0
+	}
+	if err := writeState(statePth, reminderState{IDs: spoken, Step: step + 1}); err != nil {
+		fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
 	}
 	reason := *message
 	if tool == "claude" {

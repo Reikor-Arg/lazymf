@@ -14,6 +14,10 @@ import (
 
 const backupSuffix = ".bak-lazymf"
 
+// hookTimeout (seconds) is the Stop hook timeout. Reminders wait interval x step with no cap, so the
+// tool must not kill the hook while it sleeps.
+const hookTimeout = 86400
+
 var supportedTools = []string{"claude", "codex", "copilot"}
 
 func runInstall(args []string, stdout, stderr io.Writer, install bool) int {
@@ -156,7 +160,7 @@ func installTool(home, tool, bin string, interval, maxAge, stuck int, claudeMode
 	case "claude":
 		stop := map[string]any{
 			"type": "command", "command": hookCommand(bin, tool, interval, maxAge, stuck, "", claudeMode),
-			"timeout": interval + 60,
+			"timeout": hookTimeout,
 		}
 		if claudeMode != "block" {
 			stop["asyncRewake"] = true
@@ -165,7 +169,7 @@ func installTool(home, tool, bin string, interval, maxAge, stuck int, claudeMode
 	case "codex":
 		cmd := hookCommand(bin, tool, interval, maxAge, stuck, "", "")
 		entries := map[string]map[string]any{
-			"Stop":          {"type": "command", "command": cmd, "timeout": interval + 60},
+			"Stop":          {"type": "command", "command": cmd, "timeout": hookTimeout},
 			"SubagentStart": {"type": "command", "command": cmd, "timeout": 10},
 			"SubagentStop":  {"type": "command", "command": cmd, "timeout": 10},
 		}
@@ -313,7 +317,7 @@ func installCopilot(home, bin string, interval, maxAge, stuck int) (bool, error)
 	doc := map[string]any{
 		"version": 1,
 		"hooks": map[string]any{
-			"agentStop":     mk("agentStop", interval+60),
+			"agentStop":     mk("agentStop", hookTimeout),
 			"subagentStart": mk("subagentStart", 10),
 			"subagentStop":  mk("subagentStop", 10),
 		},

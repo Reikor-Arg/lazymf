@@ -74,10 +74,15 @@ func registryAdd(path, id string, now time.Time) error {
 	})
 }
 
-// registryLive drops entries older than maxAge (rewriting the file) and returns
-// how many remain. Entries without a timestamp are stamped with now.
+// registryLive returns how many entries remain after expiry (see registryLiveIDs).
 func registryLive(path string, now time.Time, maxAge time.Duration) int {
-	n := 0
+	return len(registryLiveIDs(path, now, maxAge))
+}
+
+// registryLiveIDs drops entries older than maxAge (rewriting the file) and returns
+// the ids that remain. Entries without a timestamp are stamped with now.
+func registryLiveIDs(path string, now time.Time, maxAge time.Duration) []string {
+	var ids []string
 	_ = withLock(path, func() error {
 		lines := readLines(path)
 		keep := make([]string, 0, len(lines))
@@ -93,13 +98,15 @@ func registryLive(path string, now time.Time, maxAge time.Duration) int {
 			}
 			keep = append(keep, l)
 		}
-		n = len(keep)
+		for _, l := range keep {
+			ids = append(ids, entryID(l))
+		}
 		if dirty {
 			return writeLines(path, keep)
 		}
 		return nil
 	})
-	return n
+	return ids
 }
 
 // registryRemove drops id; if anyOne is true and id is absent it drops one entry.

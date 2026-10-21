@@ -9,7 +9,7 @@ doing.*
 
 When the main AI session launches subagents, background shell commands or workflows and then goes
 quiet, nothing tells it they are still running. `lazymf` hooks into the end-of-turn hook of the
-tool and, every N seconds (60 by default), sends one fixed reminder:
+tool and sends one fixed reminder after an escalating wait (`--interval` x step, see below):
 
 > lazymf: background jobs (subagents, shell tasks or workflows) are still running. Do not just confirm they are needed - verify each one is actually progressing: check the last-modified time of its output file or transcript and read only its last few lines. A job with no new output for several minutes, or waiting for something that will never arrive (a notification, a background test run), is stuck: stop it and finish or relaunch the work yourself. Then report each job as progressing or stuck/stopped.
 
@@ -25,6 +25,23 @@ wrote output, measured by `lazymf` itself (no tokens spent):
 ## How it works
 
 - No background daemon. The clock is the tool's own end-of-turn hook.
+- **Escalating wait.** A fixed interval gets annoying, so the wait before each reminder is
+  `--interval x step`. With `--interval 120` the reminders come after 2, 4, 6, 8, 10... minutes, with
+  no cap. The step is kept per tool and session in `<user cache dir>/lazymf/<tool>-<session>.state`
+  (JSON `{"ids": [...], "step": N}`, mode 0600) and is only written when a reminder is actually
+  delivered (`{ids: live job ids at that moment, step: step+1}`). When the hook starts, if any live job id
+  is not in the saved `ids`, the step goes back to 1; otherwise it keeps the saved step (1 without
+  state). A job that finished without another one appearing does not reset the ladder. If nothing
+  is alive when the hook would speak, the state is deleted and the next batch starts at 2 minutes. A
+  hook that stays silent (token replaced, nothing alive at start) leaves the state untouched. The
+  10 s token check and the grace margin are unchanged.
+- **Hook timeout.** Since the wait has no cap, `install` writes a timeout of 86400 s (24 h) on the
+  `Stop`/`agentStop` hook of every tool, so the tool does not kill the hook while it sleeps.
+  Re-running `install` replaces the lazymf entry and updates the timeout of an already installed
+  hook. Claude Code: `timeout` in `settings.json`. Codex: `timeout` in `hooks.json` (seconds, default
+  600; the docs state no maximum for command hooks). Copilot: `timeoutSec` in
+  `~/.copilot/hooks/lazymf.json` (no maximum found in its docs, not verified: if Copilot caps it, waits
+  longer than the cap are killed by the tool). The `SubagentStart`/`SubagentStop` hooks keep 10 s.
 - **Claude Code**: a `Stop` hook with `asyncRewake`. The turn ends normally and you can keep typing.
   The hook reads `background_tasks` from its stdin. No live subagent/shell/workflow: it exits
   silently. Otherwise it waits the interval (checking every 10 s) and exits with code 2, which wakes

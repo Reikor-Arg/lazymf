@@ -5,7 +5,7 @@ A watchdog that keeps the main AI from forgetting the subagents it launched.
 ## Language
 
 **Watchdog**:
-Keeps track of a Session's Watched jobs and reminds the main AI, once per interval (60 seconds by default, configurable), that they are still alive.
+Keeps track of a Session's Watched jobs and reminds the main AI, on an escalating wait (interval x step: with a 120 s interval, 2, 4, 6, 8... minutes), that they are still alive.
 _Avoid_: monitor, watcher, plugin
 
 **Main AI**:
@@ -17,7 +17,7 @@ Anything launched in the background that has not finished yet: a subagent, a bac
 _Avoid_: task, worker, process, watched agent
 
 **Reminder**:
-A fixed message to the main AI, one per interval, telling it to verify that each background job is actually progressing (last output time, last lines) and to stop and redo the stuck ones, not just confirm they are needed. Each one costs a turn. Below it, one line per live job with how long ago it last wrote output, measured by the Watchdog at no token cost, flagged "likely stuck" past a threshold.
+A fixed message to the main AI, sent after an escalating wait (interval x step; the step grows with each delivered Reminder and goes back to 1 when a new job appears), telling it to verify that each background job is actually progressing (last output time, last lines) and to stop and redo the stuck ones, not just confirm they are needed. Each one costs a turn. Below it, one line per live job with how long ago it last wrote output, measured by the Watchdog at no token cost, flagged "likely stuck" past a threshold.
 _Avoid_: alert, notice, heartbeat
 
 **Stuck job**:

@@ -153,7 +153,7 @@ func TestInstallUninstallIdempotent(t *testing.T) {
 	if strings.Count(s, "lazymf") != 1 && strings.Count(s, " hook claude") != 1 {
 		t.Fatalf("duplicated hook: %s", s)
 	}
-	if !strings.Contains(s, "other.sh") || !strings.Contains(s, `"asyncRewake": true`) || !strings.Contains(s, `"timeout": 90`) {
+	if !strings.Contains(s, "other.sh") || !strings.Contains(s, `"asyncRewake": true`) || !strings.Contains(s, `"timeout": 86400`) {
 		t.Fatalf("unexpected settings: %s", s)
 	}
 	if bak, err := os.ReadFile(settings + backupSuffix); err != nil || string(bak) != orig {
