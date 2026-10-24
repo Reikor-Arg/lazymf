@@ -93,8 +93,10 @@ func liveClaudeJobs(tasks []bgTask) int { return len(liveClaudeIDs(tasks)) }
 // reminderState is the escalation state kept per tool and session: the ids of the live jobs at the
 // last delivered Reminder and the step (wait = interval x step) the next one will use.
 type reminderState struct {
-	IDs  []string `json:"ids"`
-	Step int      `json:"step"`
+	IDs   []string `json:"ids"`
+	Step  int      `json:"step"`
+	Last  int64    `json:"last,omitempty"`  // unix of the last delivered reminder
+	Since int64    `json:"since,omitempty"` // unix of when the current batch of jobs started
 }
 
 func statePath(dir, tool, sid string) string { return filepath.Join(dir, tool+"-"+sid+".state") }
@@ -119,19 +121,24 @@ func writeState(path string, st reminderState) error {
 
 // nextStep is 1 when any live id is not in the saved state, otherwise the saved step.
 func nextStep(st reminderState, live []string) int {
+	if hasNewID(st, live) || st.Step < 1 {
+		return 1
+	}
+	return st.Step
+}
+
+// hasNewID reports whether any live id is missing from the saved state.
+func hasNewID(st reminderState, live []string) bool {
 	known := make(map[string]bool, len(st.IDs))
 	for _, id := range st.IDs {
 		known[id] = true
 	}
 	for _, id := range live {
 		if !known[id] {
-			return 1
+			return true
 		}
 	}
-	if st.Step < 1 {
-		return 1
-	}
-	return st.Step
+	return false
 }
 
 // safeID makes a session id safe to use as a file name (no path traversal).
@@ -235,6 +242,11 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 			return 1
 		}
 		return 0
+	case "posttooluse":
+		if tool != "codex" {
+			return 0
+		}
+		return codexPostToolUse(stdout, stderr, w, reg, sid, *interval, *maxAge, *stuck, *message)
 	case "stop", "agentstop", "":
 	default:
 		return 0
@@ -251,7 +263,12 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		return 0
 	}
 	statePth := statePath(w.dir, tool, sid)
-	step := nextStep(readState(statePth), ids)
+	prev := readState(statePth)
+	step := nextStep(prev, ids)
+	since := prev.Since
+	if hasNewID(prev, ids) || since == 0 {
+		since = w.now().Unix()
+	}
 
 	// Deduplication: the newest hook run owns the token; older runs exit silently.
 	token, err := newToken()
@@ -303,7 +320,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer, w watcher
 		_ = os.Remove(statePth) // nothing alive at speaking time: next batch starts at step 1
 		return 0
 	}
-	if err := writeState(statePth, reminderState{IDs: spoken, Step: step + 1}); err != nil {
+	if err := writeState(statePth, reminderState{IDs: spoken, Step: step + 1, Last: w.now().Unix(), Since: since}); err != nil {
 		fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
 	}
 	reason := *message
@@ -444,6 +461,102 @@ func jobList(in hookInput, now time.Time, stuck time.Duration) (out string) {
 	}
 	if live > maxJobLines {
 		lines = append(lines, fmt.Sprintf("... and %d more", live-maxJobLines))
+	}
+	return "\n" + strings.Join(lines, "\n")
+}
+
+// codexPostToolUse runs on every wait_agent result in Codex: the parent polls its subagents in a
+// loop, so the turn never ends and Stop never fires. It never sleeps; it speaks (as additionalContext)
+// only when interval x step has passed since the last delivery (or since the batch started).
+func codexPostToolUse(stdout, stderr io.Writer, w watcher, reg, sid string, interval, maxAge, stuck int, message string) int {
+	now := w.now()
+	ids := registryLiveIDs(reg, now, time.Duration(maxAge)*time.Minute)
+	if len(ids) == 0 {
+		return 0
+	}
+	statePth := statePath(w.dir, "codex", sid)
+	st := readState(statePth)
+	step := nextStep(st, ids)
+	if hasNewID(st, ids) || st.Since == 0 {
+		st = reminderState{Since: now.Unix()} // new batch: ladder restarts, no delivery yet
+	}
+	ref := st.Last
+	if ref == 0 {
+		ref = st.Since
+	}
+	if now.Unix() < ref+int64(interval)*int64(step) {
+		if err := writeState(statePth, reminderState{IDs: ids, Step: step, Last: st.Last, Since: st.Since}); err != nil {
+			fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
+		}
+		return 0
+	}
+	if err := writeState(statePth, reminderState{IDs: ids, Step: step + 1, Last: now.Unix(), Since: st.Since}); err != nil {
+		fmt.Fprintf(stderr, "lazymf hook: %v\n", err)
+	}
+	out, err := json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{
+		"hookEventName":     "PostToolUse",
+		"additionalContext": message + codexJobList(ids, now, time.Duration(stuck)*time.Minute),
+	}})
+	if err != nil {
+		return 1
+	}
+	fmt.Fprintln(stdout, string(out))
+	return 0
+}
+
+// codexHome is the Codex config dir: $CODEX_HOME or ~/.codex.
+func codexHome() string {
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(h, ".codex")
+	}
+	return ""
+}
+
+// codexRolloutMtime finds rollout-*-<id>.jsonl in the last 3 days of ~/.codex/sessions/YYYY/MM/DD.
+func codexRolloutMtime(id string, now time.Time) (time.Time, bool) {
+	home := codexHome()
+	if home == "" || !jobIDRe.MatchString(id) {
+		return time.Time{}, false
+	}
+	for d := 0; d < 3; d++ {
+		day := now.AddDate(0, 0, -d)
+		dir := filepath.Join(home, "sessions", day.Format("2006"), day.Format("01"), day.Format("02"))
+		m, _ := filepath.Glob(filepath.Join(dir, "rollout-*-"+id+".jsonl"))
+		for _, p := range m {
+			if fi, err := os.Stat(p); err == nil {
+				return fi.ModTime(), true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// codexJobList is one line per live subagent id, with minutes since its rollout was written if found.
+func codexJobList(ids []string, now time.Time, stuck time.Duration) string {
+	var lines []string
+	for i, id := range ids {
+		if i >= maxJobLines {
+			lines = append(lines, fmt.Sprintf("... and %d more", len(ids)-maxJobLines))
+			break
+		}
+		short := oneLine(id, 36)
+		line := fmt.Sprintf("- subagent (%s): ", short)
+		if mt, ok := codexRolloutMtime(id, now); ok {
+			idle := now.Sub(mt)
+			if idle < 0 {
+				idle = 0
+			}
+			line += fmt.Sprintf("last output %d min ago", int(idle/time.Minute))
+			if idle >= stuck {
+				line += " - likely stuck"
+			}
+		} else {
+			line += "inactivity unknown"
+		}
+		lines = append(lines, line)
 	}
 	return "\n" + strings.Join(lines, "\n")
 }

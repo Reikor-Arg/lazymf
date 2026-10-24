@@ -184,6 +184,8 @@ func installTool(home, tool, bin string, interval, maxAge, stuck int, claudeMode
 			"SubagentStart": {"type": "command", "command": cmd, "timeout": 10},
 			"SubagentStop":  {"type": "command", "command": cmd, "timeout": 10},
 		}
+		post := codexCommand(hookCommand(bin, tool, interval, maxAge, stuck, "posttooluse", ""), runtime.GOOS)
+		entries["PostToolUse"] = map[string]any{"type": "command", "command": post, "timeout": 10, "matcher": ".*"}
 		return editHooksJSON(filepath.Join(home, ".codex", "hooks.json"), tool, entries, true, nil)
 	case "copilot":
 		return installCopilot(home, bin, interval, maxAge, stuck)
@@ -255,7 +257,17 @@ func editHooksJSON(path, tool string, entries map[string]map[string]any, install
 	}
 	for ev, entry := range entries {
 		groups, _ := hooks[ev].([]any)
-		hooks[ev] = append(groups, map[string]any{"hooks": []any{entry}})
+		group := map[string]any{}
+		h := map[string]any{}
+		for k, v := range entry {
+			if k == "matcher" {
+				group[k] = v // the matcher belongs to the group, not the handler
+			} else {
+				h[k] = v
+			}
+		}
+		group["hooks"] = []any{h}
+		hooks[ev] = append(groups, group)
 	}
 	if len(hooks) > 0 {
 		root["hooks"] = hooks

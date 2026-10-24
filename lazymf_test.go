@@ -160,7 +160,7 @@ func TestInstallUninstallIdempotent(t *testing.T) {
 		t.Fatalf("backup missing or wrong: %v", err)
 	}
 	codexFile := filepath.Join(home, ".codex", "hooks.json")
-	if b, err := os.ReadFile(codexFile); err != nil || strings.Count(string(b), " hook codex") != 3 {
+	if b, err := os.ReadFile(codexFile); err != nil || strings.Count(string(b), " hook codex") != 4 {
 		t.Fatalf("codex hooks: %v %s", err, b)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".copilot")); err == nil {

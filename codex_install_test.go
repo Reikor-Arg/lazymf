@@ -38,10 +38,35 @@ func TestCodexInstallWritesShellCommandAndReplacesOldForm(t *testing.T) {
 	}
 	b, _ := os.ReadFile(file)
 	s := string(b)
-	if strings.Count(s, " hook codex") != 3 {
+	if strings.Count(s, " hook codex") != 4 {
 		t.Fatalf("old entry must be replaced, not duplicated: %s", s)
 	}
-	if runtime.GOOS == "windows" && strings.Count(s, `"& \"`) != 3 {
+	if runtime.GOOS == "windows" && strings.Count(s, `"& \"`) != 4 {
 		t.Fatalf("every codex command needs the call operator on Windows: %s", s)
+	}
+}
+
+func TestCodexInstallPostToolUseAndUninstall(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	for i := 0; i < 2; i++ {
+		if code := runInstall([]string{"--home", home, "--tool", "codex"}, &out, &errb, true); code != 0 {
+			t.Fatalf("install: %d %s", code, errb.String())
+		}
+	}
+	b, _ := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	s := string(b)
+	if strings.Count(s, "posttooluse") != 1 || !strings.Contains(s, `"matcher": ".*"`) {
+		t.Fatalf("PostToolUse with matcher expected once: %s", s)
+	}
+	if code := runInstall([]string{"--home", home, "--tool", "codex"}, &out, &errb, false); code != 0 {
+		t.Fatal("uninstall failed")
+	}
+	b, _ = os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	if strings.Contains(string(b), "lazymf") || strings.Contains(string(b), "PostToolUse") {
+		t.Fatalf("uninstall left entries: %s", b)
 	}
 }
