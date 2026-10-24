@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -150,6 +151,16 @@ func hookCommand(bin, tool string, interval, maxAge, stuck int, event, mode stri
 	return c
 }
 
+// codexCommand adapts the hook command to the shell Codex uses. On Windows Codex runs hook
+// commands through PowerShell, which parses a leading quoted string as an expression ("hook: Stop
+// Failed", the hook never runs), so the call operator is required. Elsewhere it is plain sh.
+func codexCommand(c, goos string) string {
+	if goos == "windows" {
+		return "& " + c
+	}
+	return c
+}
+
 // isOurs reports whether a hook command line was written by lazymf for this tool.
 func isOurs(cmd, tool string) bool {
 	return strings.Contains(strings.ToLower(cmd), "lazymf") && strings.Contains(cmd, " hook "+tool)
@@ -167,7 +178,7 @@ func installTool(home, tool, bin string, interval, maxAge, stuck int, claudeMode
 		}
 		return editClaudeSettings(home, marker, map[string]map[string]any{"Stop": stop}, true, claudeMode == "block")
 	case "codex":
-		cmd := hookCommand(bin, tool, interval, maxAge, stuck, "", "")
+		cmd := codexCommand(hookCommand(bin, tool, interval, maxAge, stuck, "", ""), runtime.GOOS)
 		entries := map[string]map[string]any{
 			"Stop":          {"type": "command", "command": cmd, "timeout": hookTimeout},
 			"SubagentStart": {"type": "command", "command": cmd, "timeout": 10},
